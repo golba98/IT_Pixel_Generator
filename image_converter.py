@@ -59,7 +59,7 @@ def _tile_reference_over_input(img_input: Image.Image, img_ref: Image.Image) -> 
     ref_w, ref_h = img_ref.size
 
     ref_px = img_ref.load()
-    out = Image.new('RGB', (in_w, in_h))
+    out = img_input.copy() # Start with input image
     out_px = out.load()
 
     for y in range(in_h):
@@ -69,6 +69,45 @@ def _tile_reference_over_input(img_input: Image.Image, img_ref: Image.Image) -> 
             out_px[x, y] = ref_px[rx, ry]
 
     return out
+
+
+def mosaic_tile_generator(img_in: Image.Image, img_ref: Image.Image, steps=100):
+    """Generator that yields intermediate images during the tiling process.
+    Uses a random block approach for a more 'redesigned' visual effect.
+    """
+    import random
+    img_in = img_in.convert('RGB')
+    img_ref = img_ref.convert('RGB')
+    in_w, in_h = img_in.size
+    ref_w, ref_h = img_ref.size
+
+    ref_px = img_ref.load()
+    out = img_in.copy()
+    out_px = out.load()
+
+    # Divide image into blocks for a cooler transition
+    block_size = 16
+    blocks = []
+    for y in range(0, in_h, block_size):
+        for x in range(0, in_w, block_size):
+            blocks.append((x, y))
+    
+    random.shuffle(blocks)
+    
+    # Calculate how many blocks to process per step
+    blocks_per_step = max(1, len(blocks) // steps)
+
+    for i in range(0, len(blocks), blocks_per_step):
+        batch = blocks[i:i + blocks_per_step]
+        for bx, by in batch:
+            # Process each block
+            for y in range(by, min(by + block_size, in_h)):
+                ry = y % ref_h
+                for x in range(bx, min(bx + block_size, in_w)):
+                    rx = x % ref_w
+                    out_px[x, y] = ref_px[rx, ry]
+        
+        yield out.copy()
 
 
 def mosaic_tile_to_it(input_path: str, ref_path: Optional[str] = None, output_name: str = "it.jpeg"):
@@ -103,33 +142,30 @@ def mosaic_tile_to_it(input_path: str, ref_path: Optional[str] = None, output_na
 
 
 def main():
-    """Main function to handle command-line usage."""
-    if len(sys.argv) < 2:
-        print("Usage: python image_converter.py <input_image_path>")
-        print("\nExample:")
-        print("  python image_converter.py myimage.png")
-        print("  python image_converter.py photo.webp")
-        sys.exit(1)
+    """Main function to handle command-line usage or launch GUI."""
+    input_path = sys.argv[1] if len(sys.argv) > 1 else None
     
-    input_path = sys.argv[1]
-    
-    # Check if file exists
-    if not os.path.exists(input_path):
-        print(f"✗ Error: File '{input_path}' does not exist.")
-        sys.exit(1)
-    
+    # Always launch the GUI, passing the path if provided
     try:
-        info = convert_to_jpeg(input_path)
-        print(f"✓ Image successfully converted and saved as: {info['output_path']}")
-        print(f"  Original format: {info['original_format']}")
-        print(f"  Original size: {info['original_size']}")
-        print(f"  Output size: {info['output_size']}")
-    except FileNotFoundError:
-        print(f"✗ Error: File '{input_path}' not found.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"✗ Error converting image: {e}")
-        sys.exit(1)
+        from gui_converter import main as gui_main
+        gui_main(initial_path=input_path)
+    except ImportError:
+        if not input_path:
+            print("Usage: python image_converter.py <input_image_path>")
+            sys.exit(1)
+        
+        # Fallback to CLI only if GUI is unavailable
+        print("GUI not available. Falling back to CLI...")
+        if not os.path.exists(input_path):
+            print(f"✗ Error: File '{input_path}' does not exist.")
+            sys.exit(1)
+        
+        try:
+            info = convert_to_jpeg(input_path)
+            print(f"✓ Image successfully converted and saved as: {info['output_path']}")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

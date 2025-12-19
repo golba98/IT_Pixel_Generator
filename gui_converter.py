@@ -6,20 +6,26 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
 
-from image_converter import convert_to_jpeg
+from image_converter import mosaic_tile_generator
 
 
 class ImageConverterGUI(tk.Tk):
-    def __init__(self):
+    def __init__(self, initial_path=None):
         super().__init__()
         self.title("Image → picture it.jpeg")
-        self.geometry("700x500")
+        self.geometry("800x600")
         self.resizable(True, True)
 
-        self.input_path = None
+        self.input_path = initial_path
         self.preview_img = None
+        self.transformation_gen = None
 
         self._build_ui()
+        
+        if self.input_path:
+            self.path_var.set(self.input_path)
+            self._show_preview(self.input_path)
+            self.status_var.set(f"Selected: {os.path.basename(self.input_path)}")
 
     def _build_ui(self):
         frm = ttk.Frame(self, padding=12)
@@ -35,13 +41,13 @@ class ImageConverterGUI(tk.Tk):
         browse_btn = ttk.Button(controls, text="Browse…", command=self.browse_file)
         browse_btn.pack(side=tk.LEFT)
 
-        convert_btn = ttk.Button(controls, text="Convert to JPEG", command=self.convert)
-        convert_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self.transform_btn = ttk.Button(controls, text="Transform", command=self.start_transformation)
+        self.transform_btn.pack(side=tk.LEFT, padx=(8, 0))
 
         preview_frame = ttk.LabelFrame(frm, text="Preview")
         preview_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
 
-        self.canvas = tk.Canvas(preview_frame, bg="#222", height=360)
+        self.canvas = tk.Canvas(preview_frame, bg="#222")
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
         self.status_var = tk.StringVar(value="Select an image to begin")
@@ -61,55 +67,77 @@ class ImageConverterGUI(tk.Tk):
         self._show_preview(path)
         self.status_var.set(f"Selected: {os.path.basename(path)}")
 
-    def _show_preview(self, path):
+    def _show_preview(self, path_or_img):
         try:
-            img = Image.open(path)
+            if isinstance(path_or_img, str):
+                img = Image.open(path_or_img)
+            else:
+                img = path_or_img
+
             # Resize to fit canvas while preserving aspect
-            cw = max(200, self.canvas.winfo_width() or 600)
-            ch = max(200, self.canvas.winfo_height() or 360)
-            img.thumbnail((cw - 20, ch - 20))
-            self.preview_img = ImageTk.PhotoImage(img)
+            cw = max(200, self.canvas.winfo_width() or 780)
+            ch = max(200, self.canvas.winfo_height() or 400)
+            
+            # Create a copy for display so we don't modify the original
+            display_img = img.copy()
+            display_img.thumbnail((cw - 20, ch - 20))
+            
+            self.preview_img = ImageTk.PhotoImage(display_img)
             self.canvas.delete("all")
             self.canvas.create_image(cw // 2, ch // 2, image=self.preview_img, anchor=tk.CENTER)
         except Exception as e:
             messagebox.showerror("Preview error", f"Unable to open image:\n{e}")
 
-    def convert(self):
+    def start_transformation(self):
         path = self.path_var.get() or self.input_path
         if not path or not os.path.exists(path):
             messagebox.showwarning("No file", "Please select a valid image file first.")
             return
 
-        output_name = "it.jpeg"
-        try:
-            # Use mosaic/tile behavior: tile the reference `it.jpeg` across the input
-            info = None
-            from image_converter import mosaic_tile_to_it
-
-            info = mosaic_tile_to_it(path, ref_path=None, output_name=output_name)
-
-            self.status_var.set(f"Saved: {info['output_path']}")
-            messagebox.showinfo("Done", f"Saved as:\n{info['output_path']}")
-        except FileNotFoundError as e:
-            # If reference not found, offer user to pick one
+        ref_path = os.path.join(os.path.dirname(__file__) or '.', 'it.jpeg')
+        if not os.path.exists(ref_path):
             if messagebox.askyesno("Reference missing", "Default it.jpeg not found. Select a reference image?"):
-                ref = filedialog.askopenfilename(title="Select reference image",
+                ref_path = filedialog.askopenfilename(title="Select reference image",
                                                  filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.webp *.tiff *.gif"), ("All files", "*.*")])
-                if ref:
-                    try:
-                        info = mosaic_tile_to_it(path, ref_path=ref, output_name=output_name)
-                        self.status_var.set(f"Saved: {info['output_path']}")
-                        messagebox.showinfo("Done", f"Saved as:\n{info['output_path']}")
-                    except Exception as e2:
-                        messagebox.showerror("Convert error", f"Failed to convert with selected reference:\n{e2}")
+                if not ref_path:
+                    return
             else:
-                messagebox.showwarning("Canceled", "Conversion canceled because reference was not available.")
+                return
+
+        try:
+            img_in = Image.open(path)
+            img_ref = Image.open(ref_path)
+            
+            self.status_var.set("Transforming...")
+            self.transform_btn.config(state=tk.DISABLED)
+            
+            # Initialize generator with more steps for a smoother look
+            self.transformation_gen = mosaic_tile_generator(img_in, img_ref, steps=150)
+            self._process_step()
+            
         except Exception as e:
-            messagebox.showerror("Convert error", f"Failed to convert:\n{e}")
+            messagebox.showerror("Error", f"Transformation failed: {e}")
+            self.transform_btn.config(state=tk.NORMAL)
+
+    def _process_step(self):
+        if self.transformation_gen:
+            try:
+                next_img = next(self.transformation_gen)
+                self._show_preview(next_img)
+                # Schedule next step
+                self.after(10, self._process_step)
+            except StopIteration:
+                self.status_var.set("Transformation complete!")
+                self.transform_btn.config(state=tk.NORMAL)
+                self.transformation_gen = None
+            except Exception as e:
+                messagebox.showerror("Error", f"Error during transformation: {e}")
+                self.transform_btn.config(state=tk.NORMAL)
+                self.transformation_gen = None
 
 
-def main():
-    app = ImageConverterGUI()
+def main(initial_path=None):
+    app = ImageConverterGUI(initial_path=initial_path)
     app.mainloop()
 
 
