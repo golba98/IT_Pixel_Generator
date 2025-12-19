@@ -74,11 +74,11 @@ class ImageConverterGUI(tk.Tk):
             else:
                 img = path_or_img
 
-            # Resize to fit canvas while preserving aspect
+           
             cw = max(200, self.canvas.winfo_width() or 780)
             ch = max(200, self.canvas.winfo_height() or 400)
             
-            # Create a copy for display so we don't modify the original
+         
             display_img = img.copy()
             display_img.thumbnail((cw - 20, ch - 20))
             
@@ -111,7 +111,7 @@ class ImageConverterGUI(tk.Tk):
             self.status_var.set("Transforming...")
             self.transform_btn.config(state=tk.DISABLED)
             
-            # Initialize generator with more steps for a smoother look
+          
             self.transformation_gen = mosaic_tile_generator(img_in, img_ref, steps=150)
             self._process_step()
             
@@ -124,7 +124,8 @@ class ImageConverterGUI(tk.Tk):
             try:
                 next_img = next(self.transformation_gen)
                 self._show_preview(next_img)
-                # Schedule next step
+                
+                
                 self.after(10, self._process_step)
             except StopIteration:
                 self.status_var.set("Transformation complete!")
