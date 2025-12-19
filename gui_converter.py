@@ -80,11 +80,30 @@ class ImageConverterGUI(tk.Tk):
             messagebox.showwarning("No file", "Please select a valid image file first.")
             return
 
-        output_name = "picture it.jpeg"
+        output_name = "it.jpeg"
         try:
-            info = convert_to_jpeg(path, output_name=output_name)
+            # Use mosaic/tile behavior: tile the reference `it.jpeg` across the input
+            info = None
+            from image_converter import mosaic_tile_to_it
+
+            info = mosaic_tile_to_it(path, ref_path=None, output_name=output_name)
+
             self.status_var.set(f"Saved: {info['output_path']}")
             messagebox.showinfo("Done", f"Saved as:\n{info['output_path']}")
+        except FileNotFoundError as e:
+            # If reference not found, offer user to pick one
+            if messagebox.askyesno("Reference missing", "Default it.jpeg not found. Select a reference image?"):
+                ref = filedialog.askopenfilename(title="Select reference image",
+                                                 filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.webp *.tiff *.gif"), ("All files", "*.*")])
+                if ref:
+                    try:
+                        info = mosaic_tile_to_it(path, ref_path=ref, output_name=output_name)
+                        self.status_var.set(f"Saved: {info['output_path']}")
+                        messagebox.showinfo("Done", f"Saved as:\n{info['output_path']}")
+                    except Exception as e2:
+                        messagebox.showerror("Convert error", f"Failed to convert with selected reference:\n{e2}")
+            else:
+                messagebox.showwarning("Canceled", "Conversion canceled because reference was not available.")
         except Exception as e:
             messagebox.showerror("Convert error", f"Failed to convert:\n{e}")
 
