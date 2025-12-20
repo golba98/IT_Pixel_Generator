@@ -98,5 +98,5 @@ Notes
 - The repository contains `it.jpeg` which is used as the default tile reference.
 
 License
-- MIT (add or change as appropriate for your public repository)
+- MIT 
 
