@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+.claude/
+
+# Sensitive data
+.env
+*.pem
+*.key
+*.cert
+secret.json
+
+# Local artifacts
+*.log
+*.tmp
+it.jpeg

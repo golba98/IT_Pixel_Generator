@@ -10,22 +10,31 @@ from dataclasses import dataclass
 from PIL import Image, ImageEnhance, ImageDraw
 
 DEFAULT_BLOCK_SIZE = 1
-ANIMATION_STEPS = 1
+DEFAULT_ANIMATION_STEPS = 1
 FINAL_BLEND_STRENGTH = 1
 ENABLE_SHIMMER = True
 
 
 @dataclass
 class PixelTile:
-    image: Image.Image
     avg_color: Tuple[int, int, int]
     luminance: float
     coord: Tuple[int, int]
+    size: Tuple[int, int]
 
 
 class PennywiseMosaicEngine:
-    def __init__(self, input_source: Union[str, Image.Image], ref_source: Union[str, Image.Image]):
-        self.block_size = DEFAULT_BLOCK_SIZE
+    def __init__(
+        self,
+        input_source: Union[str, Image.Image],
+        ref_source: Union[str, Image.Image],
+        animation_steps: int = DEFAULT_ANIMATION_STEPS,
+        block_size: int = DEFAULT_BLOCK_SIZE,
+        blend_strength: float = FINAL_BLEND_STRENGTH
+    ):
+        self.block_size = max(1, int(block_size))
+        self.blend_strength = max(0.0, min(1.0, float(blend_strength)))
+        self.animation_steps = max(1, int(animation_steps))
         self.tiles: List[PixelTile] = []
         self.tile_luminances: List[float] = []
         self.grid_map: List[Dict] = []
@@ -38,10 +47,12 @@ class PennywiseMosaicEngine:
             self.img_in = input_source.convert('RGB')
 
         total_pixels = self.img_in.width * self.img_in.height
-        target_blocks = 60000000
-        if total_pixels > target_blocks:
-            calc_size = int(math.sqrt(total_pixels / target_blocks))
-            self.block_size = max(self.block_size, calc_size)
+        # Only auto-scale if block_size is 1 (default) and image is massive
+        if self.block_size == 1:
+            target_blocks = 60000000
+            if total_pixels > target_blocks:
+                calc_size = int(math.sqrt(total_pixels / target_blocks))
+                self.block_size = max(self.block_size, calc_size)
 
         if isinstance(ref_source, str):
             if not os.path.exists(ref_source):
@@ -51,6 +62,16 @@ class PennywiseMosaicEngine:
             self.img_ref = ref_source.convert('RGB')
 
         self.img_ref = self.img_ref.resize(self.img_in.size, Image.Resampling.LANCZOS)
+
+    def get_total_steps_estimate(self) -> int:
+        """Calculate total yielded frames: Scan frames + Animation steps + Final frame."""
+        w, h = self.img_in.size
+        # Scan phase yields every 'scan_interval' rows
+        scan_interval = max(self.block_size, h // 15)
+        scan_frames = math.ceil(h / scan_interval)
+        # Phase 2 & 3 yields text strings (2 steps)
+        # Animation phase yields 'animation_steps' + 10 padding steps + final canvas
+        return scan_frames + 2 + self.animation_steps + 10 + 1
 
     def _calculate_luminance(self, color: Tuple[int, int, int]) -> float:
         r, g, b = color
@@ -88,10 +109,10 @@ class PennywiseMosaicEngine:
                 lum = self._calculate_luminance(avg_col)
 
                 self.tiles.append(PixelTile(
-                    image=tile_img,
                     avg_color=avg_col,
                     luminance=lum,
-                    coord=(x, y)
+                    coord=(x, y),
+                    size=(box[2] - box[0], box[3] - box[1])
                 ))
 
         self.tiles.sort(key=lambda t: t.luminance)
@@ -125,6 +146,14 @@ class PennywiseMosaicEngine:
         yield "Phase 3/3: Optimizing Grid (Spectral Sort)..."
         self.grid_map.sort(key=lambda item: item['hue'])
 
+    def _get_tile_image(self, tile: PixelTile, target_size: Tuple[int, int]) -> Image.Image:
+        tx, ty = tile.coord
+        tw, th = tile.size
+        tile_img = self.img_in.crop((tx, ty, tx + tw, ty + th))
+        if tile_img.size != target_size:
+            tile_img = tile_img.resize(target_size)
+        return tile_img
+
     def generate_frames(self) -> Generator[Union[Image.Image, str], None, None]:
         if not self.grid_map:
             yield from self.prepare_data_steps()
@@ -133,11 +162,12 @@ class PennywiseMosaicEngine:
         canvas = self.img_in.copy()
 
         total_blocks = len(self.grid_map)
-        blocks_per_step = math.ceil(total_blocks / ANIMATION_STEPS)
+        blocks_per_step = math.ceil(total_blocks / self.animation_steps)
+        jitter_range = max(1, len(self.tiles) // 200)
 
         processed_count = 0
 
-        for step in range(ANIMATION_STEPS + 10):
+        for step in range(self.animation_steps + 10):
             start_idx = processed_count
             end_idx = min(processed_count + blocks_per_step, total_blocks)
 
@@ -154,34 +184,31 @@ class PennywiseMosaicEngine:
 
                 idx = bisect.bisect_left(self.tile_luminances, target_lum)
                 idx = max(0, min(len(self.tiles) - 1, idx))
-                idx = max(0, min(len(self.tiles) - 1, idx + random.randint(-5, 5)))
-
-                best_tile = self.tiles[idx].image
+                idx = max(0, min(len(self.tiles) - 1, idx + random.randint(-jitter_range, jitter_range)))
 
                 bw, bh = box[2]-box[0], box[3]-box[1]
-                if best_tile.size != (bw, bh):
-                    best_tile = best_tile.resize((bw, bh))
+                best_tile = self._get_tile_image(self.tiles[idx], (bw, bh))
 
                 color_overlay = Image.new('RGB', best_tile.size, target_color)
-                final_tile = Image.blend(best_tile, color_overlay, FINAL_BLEND_STRENGTH)
+                final_tile = Image.blend(best_tile, color_overlay, self.blend_strength)
 
                 canvas.paste(final_tile, box)
 
             if ENABLE_SHIMMER and current_batch:
-                display_frame = canvas.copy()
                 min_x = min(b['box'][0] for b in current_batch)
                 max_x = max(b['box'][2] for b in current_batch)
                 min_y = min(b['box'][1] for b in current_batch)
                 max_y = max(b['box'][3] for b in current_batch)
 
                 try:
-                    active_region = display_frame.crop((min_x, min_y, max_x, max_y))
-                    enhancer = ImageEnhance.Brightness(active_region)
+                    shimmer_region = canvas.crop((min_x, min_y, max_x, max_y))
+                    enhancer = ImageEnhance.Brightness(shimmer_region)
                     bright_region = enhancer.enhance(1.4)
-                    display_frame.paste(bright_region, (min_x, min_y))
-                except:
-                    pass
-                yield display_frame
+                    canvas.paste(bright_region, (min_x, min_y))
+                    yield canvas
+                    canvas.paste(shimmer_region, (min_x, min_y))
+                except Exception:
+                    yield canvas
             else:
                 yield canvas
 
@@ -189,16 +216,13 @@ class PennywiseMosaicEngine:
         yield canvas
 
 
-def mosaic_tile_generator(img_in: Image.Image, img_ref: Image.Image, steps=100):
-    engine = PennywiseMosaicEngine(img_in, img_ref)
-    global ANIMATION_STEPS
-    ANIMATION_STEPS = steps
-    return engine.generate_frames()
+def mosaic_tile_engine(img_in: Image.Image, img_ref: Image.Image, steps=100, block_size=1, blend_strength=1.0):
+    return PennywiseMosaicEngine(img_in, img_ref, animation_steps=steps, block_size=block_size, blend_strength=blend_strength)
 
 
 def convert_to_jpeg(input_path: str, output_name: str = "transformation_process.gif"):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    ref_path = os.path.join(base_dir, 'it.jpeg')
+    ref_path = os.path.join(base_dir, "it.jpeg")
 
     if not os.path.exists(ref_path):
         print(f"Error: Reference image 'it.jpeg' not found in {base_dir}")
