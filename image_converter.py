@@ -1,143 +1,203 @@
-import os
-import sys
-import math
-import random
+import argparse
 import bisect
 import colorsys
-from typing import List, Tuple, Generator, Dict, Union
+import math
+import os
+import random
+import sys
 from dataclasses import dataclass
+from typing import Dict, Generator, List, Optional, Tuple, Union
 
-from PIL import Image, ImageEnhance, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
+
 
 DEFAULT_BLOCK_SIZE = 1
-ANIMATION_STEPS = 1
-FINAL_BLEND_STRENGTH = 1
+DEFAULT_ANIMATION_STEPS = 120
+DEFAULT_GIF_FPS = 25
+DEFAULT_FRAME_SAMPLE = 1
+FINAL_BLEND_STRENGTH = 1.0
 ENABLE_SHIMMER = True
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_REFERENCE_IMAGE = os.path.join(PROJECT_DIR, "it.jpeg")
 
 
-@dataclass
+@dataclass(frozen=True)
 class PixelTile:
-    image: Image.Image
     avg_color: Tuple[int, int, int]
     luminance: float
     coord: Tuple[int, int]
+    size: Tuple[int, int]
+
+
+GridBlock = Dict[str, Union[Tuple[int, int, int, int], Tuple[int, int, int], float]]
 
 
 class PennywiseMosaicEngine:
-    def __init__(self, input_source: Union[str, Image.Image], ref_source: Union[str, Image.Image]):
-        self.block_size = DEFAULT_BLOCK_SIZE
+    def __init__(
+        self,
+        input_source: Union[str, Image.Image],
+        ref_source: Union[str, Image.Image],
+        animation_steps: int = DEFAULT_ANIMATION_STEPS,
+        block_size: int = DEFAULT_BLOCK_SIZE,
+        blend_strength: float = FINAL_BLEND_STRENGTH,
+    ):
+        self.block_size = max(1, int(block_size))
+        self.blend_strength = max(0.0, min(1.0, float(blend_strength)))
+        self.animation_steps = max(1, int(animation_steps))
         self.tiles: List[PixelTile] = []
         self.tile_luminances: List[float] = []
-        self.grid_map: List[Dict] = []
+        self.grid_map: List[GridBlock] = []
 
-        if isinstance(input_source, str):
-            if not os.path.exists(input_source):
-                raise FileNotFoundError(f"Input image not found: {input_source}")
-            self.img_in = Image.open(input_source).convert('RGB')
-        else:
-            self.img_in = input_source.convert('RGB')
+        self.img_in = self._load_rgb_image(input_source, "Input")
+        self._scale_block_size_for_large_images()
+        self.img_ref = self._load_rgb_image(ref_source, "Reference").resize(
+            self.img_in.size,
+            Image.Resampling.LANCZOS,
+        )
 
+    @staticmethod
+    def _load_rgb_image(source: Union[str, Image.Image], label: str) -> Image.Image:
+        if isinstance(source, str):
+            if not os.path.exists(source):
+                raise FileNotFoundError(f"{label} image not found: {source}")
+            with Image.open(source) as image:
+                return image.convert("RGB")
+
+        return source.convert("RGB")
+
+    def _scale_block_size_for_large_images(self) -> None:
         total_pixels = self.img_in.width * self.img_in.height
-        target_blocks = 60000000
-        if total_pixels > target_blocks:
-            calc_size = int(math.sqrt(total_pixels / target_blocks))
-            self.block_size = max(self.block_size, calc_size)
+        target_blocks = 60_000_000
 
-        if isinstance(ref_source, str):
-            if not os.path.exists(ref_source):
-                raise FileNotFoundError(f"Reference image not found: {ref_source}")
-            self.img_ref = Image.open(ref_source).convert('RGB')
-        else:
-            self.img_ref = ref_source.convert('RGB')
+        if self.block_size == 1 and total_pixels > target_blocks:
+            calculated_size = int(math.sqrt(total_pixels / target_blocks))
+            self.block_size = max(self.block_size, calculated_size)
 
-        self.img_ref = self.img_ref.resize(self.img_in.size, Image.Resampling.LANCZOS)
+    def get_total_steps_estimate(self) -> int:
+        """Estimate yielded frames and status updates for GUI progress."""
+        _, height = self.img_in.size
+        scan_interval = max(self.block_size, height // 15)
+        scan_frames = math.ceil(height / scan_interval)
+        status_updates = 2
+        shimmer_padding_frames = 10
+        final_frame = 1
+        return scan_frames + status_updates + self.animation_steps + shimmer_padding_frames + final_frame
 
-    def _calculate_luminance(self, color: Tuple[int, int, int]) -> float:
-        r, g, b = color
-        return 0.299 * r + 0.587 * g + 0.114 * b
+    @staticmethod
+    def _calculate_luminance(color: Tuple[int, int, int]) -> float:
+        red, green, blue = color
+        return 0.299 * red + 0.587 * green + 0.114 * blue
 
-    def _get_avg_color(self, img_chunk: Image.Image) -> Tuple[int, int, int]:
+    @staticmethod
+    def _get_avg_color(img_chunk: Image.Image) -> Tuple[int, int, int]:
         return img_chunk.resize((1, 1)).getpixel((0, 0))
 
-    def prepare_data(self):
+    def prepare_data(self) -> None:
         for _ in self.prepare_data_steps():
             pass
 
-    def prepare_data_steps(self):
+    def prepare_data_steps(self) -> Generator[Union[Image.Image, str], None, None]:
         yield "Phase 1/3: Scanning Input Pixels..."
-        w, h = self.img_in.size
+        width, height = self.img_in.size
 
         self.tiles = []
+        self.tile_luminances = []
+        self.grid_map = []
 
-        vis_base = ImageEnhance.Brightness(self.img_in).enhance(0.3)
+        dimmed_input = ImageEnhance.Brightness(self.img_in).enhance(0.3)
+        scan_interval = max(self.block_size, height // 15)
 
-        scan_interval = max(self.block_size, h // 15)
-
-        for y in range(0, h, self.block_size):
-            if y % scan_interval < self.block_size:
-                frame = vis_base.copy()
-                frame.paste(self.img_in.crop((0, 0, w, y)), (0, 0))
+        for y_coord in range(0, height, self.block_size):
+            if y_coord % scan_interval < self.block_size:
+                frame = dimmed_input.copy()
+                frame.paste(self.img_in.crop((0, 0, width, y_coord)), (0, 0))
                 draw = ImageDraw.Draw(frame)
-                draw.rectangle([0, y, w, y + self.block_size], outline="#00ff00", width=2)
+                draw.rectangle(
+                    [0, y_coord, width, y_coord + self.block_size],
+                    outline="#00ff00",
+                    width=2,
+                )
                 yield frame
 
-            for x in range(0, w, self.block_size):
-                box = (x, y, min(w, x + self.block_size), min(h, y + self.block_size))
+            for x_coord in range(0, width, self.block_size):
+                box = (
+                    x_coord,
+                    y_coord,
+                    min(width, x_coord + self.block_size),
+                    min(height, y_coord + self.block_size),
+                )
                 tile_img = self.img_in.crop(box)
-                avg_col = self._get_avg_color(tile_img)
-                lum = self._calculate_luminance(avg_col)
+                avg_color = self._get_avg_color(tile_img)
 
-                self.tiles.append(PixelTile(
-                    image=tile_img,
-                    avg_color=avg_col,
-                    luminance=lum,
-                    coord=(x, y)
-                ))
+                self.tiles.append(
+                    PixelTile(
+                        avg_color=avg_color,
+                        luminance=self._calculate_luminance(avg_color),
+                        coord=(x_coord, y_coord),
+                        size=(box[2] - box[0], box[3] - box[1]),
+                    )
+                )
 
-        self.tiles.sort(key=lambda t: t.luminance)
-        self.tile_luminances = [t.luminance for t in self.tiles]
+        self.tiles.sort(key=lambda tile: tile.luminance)
+        self.tile_luminances = [tile.luminance for tile in self.tiles]
 
         yield "Phase 2/3: Processing Target Geometry..."
-        cx, cy = w // 2, h // 2
 
-        for y in range(0, h, self.block_size):
-            for x in range(0, w, self.block_size):
-                box = (x, y, min(w, x + self.block_size), min(h, y + self.block_size))
+        for y_coord in range(0, height, self.block_size):
+            for x_coord in range(0, width, self.block_size):
+                box = (
+                    x_coord,
+                    y_coord,
+                    min(width, x_coord + self.block_size),
+                    min(height, y_coord + self.block_size),
+                )
 
                 target_region = self.img_ref.crop(box)
                 target_color = self._get_avg_color(target_region)
                 target_lum = self._calculate_luminance(target_color)
+                red, green, blue = target_color
+                hue, _, _ = colorsys.rgb_to_hsv(red / 255.0, green / 255.0, blue / 255.0)
 
-                r, g, b = target_color
-                h_val, s_val, v_val = colorsys.rgb_to_hsv(r/255.0, g/255.0, b/255.0)
-
-                dx, dy = x - cx, y - cy
-                dist = math.sqrt(dx*dx + dy*dy)
-
-                self.grid_map.append({
-                    'box': box,
-                    'target_color': target_color,
-                    'target_lum': target_lum,
-                    'dist': dist,
-                    'hue': h_val
-                })
+                self.grid_map.append(
+                    {
+                        "box": box,
+                        "target_color": target_color,
+                        "target_lum": target_lum,
+                        "hue": hue,
+                    }
+                )
 
         yield "Phase 3/3: Optimizing Grid (Spectral Sort)..."
-        self.grid_map.sort(key=lambda item: item['hue'])
+        self.grid_map.sort(key=lambda item: item["hue"])
+
+    def _get_tile_image(self, tile: PixelTile, target_size: Tuple[int, int]) -> Image.Image:
+        x_coord, y_coord = tile.coord
+        tile_width, tile_height = tile.size
+        tile_img = self.img_in.crop(
+            (x_coord, y_coord, x_coord + tile_width, y_coord + tile_height)
+        )
+
+        if tile_img.size != target_size:
+            tile_img = tile_img.resize(target_size)
+
+        return tile_img
 
     def generate_frames(self) -> Generator[Union[Image.Image, str], None, None]:
         if not self.grid_map:
             yield from self.prepare_data_steps()
 
-        w, h = self.img_in.size
         canvas = self.img_in.copy()
-
         total_blocks = len(self.grid_map)
-        blocks_per_step = math.ceil(total_blocks / ANIMATION_STEPS)
 
+        if total_blocks == 0:
+            yield canvas
+            return
+
+        blocks_per_step = max(1, math.ceil(total_blocks / self.animation_steps))
+        jitter_range = max(1, len(self.tiles) // 200)
         processed_count = 0
 
-        for step in range(ANIMATION_STEPS + 10):
+        for _ in range(self.animation_steps + 10):
             start_idx = processed_count
             end_idx = min(processed_count + blocks_per_step, total_blocks)
 
@@ -148,106 +208,175 @@ class PennywiseMosaicEngine:
             current_batch = self.grid_map[start_idx:end_idx]
 
             for block in current_batch:
-                box = block['box']
-                target_lum = block['target_lum']
-                target_color = block['target_color']
+                box = block["box"]
+                target_lum = block["target_lum"]
+                target_color = block["target_color"]
 
-                idx = bisect.bisect_left(self.tile_luminances, target_lum)
+                if not isinstance(box, tuple) or not isinstance(target_color, tuple):
+                    continue
+
+                idx = bisect.bisect_left(self.tile_luminances, float(target_lum))
                 idx = max(0, min(len(self.tiles) - 1, idx))
-                idx = max(0, min(len(self.tiles) - 1, idx + random.randint(-5, 5)))
+                jittered_idx = idx + random.randint(-jitter_range, jitter_range)
+                idx = max(0, min(len(self.tiles) - 1, jittered_idx))
 
-                best_tile = self.tiles[idx].image
+                block_width = box[2] - box[0]
+                block_height = box[3] - box[1]
+                best_tile = self._get_tile_image(self.tiles[idx], (block_width, block_height))
 
-                bw, bh = box[2]-box[0], box[3]-box[1]
-                if best_tile.size != (bw, bh):
-                    best_tile = best_tile.resize((bw, bh))
-
-                color_overlay = Image.new('RGB', best_tile.size, target_color)
-                final_tile = Image.blend(best_tile, color_overlay, FINAL_BLEND_STRENGTH)
-
+                color_overlay = Image.new("RGB", best_tile.size, target_color)
+                final_tile = Image.blend(best_tile, color_overlay, self.blend_strength)
                 canvas.paste(final_tile, box)
 
             if ENABLE_SHIMMER and current_batch:
-                display_frame = canvas.copy()
-                min_x = min(b['box'][0] for b in current_batch)
-                max_x = max(b['box'][2] for b in current_batch)
-                min_y = min(b['box'][1] for b in current_batch)
-                max_y = max(b['box'][3] for b in current_batch)
-
-                try:
-                    active_region = display_frame.crop((min_x, min_y, max_x, max_y))
-                    enhancer = ImageEnhance.Brightness(active_region)
-                    bright_region = enhancer.enhance(1.4)
-                    display_frame.paste(bright_region, (min_x, min_y))
-                except:
-                    pass
-                yield display_frame
+                yield self._apply_shimmer_frame(canvas, current_batch)
             else:
                 yield canvas
 
             processed_count = end_idx
+
         yield canvas
 
+    @staticmethod
+    def _apply_shimmer_frame(canvas: Image.Image, current_batch: List[GridBlock]) -> Image.Image:
+        boxes = [block["box"] for block in current_batch if isinstance(block["box"], tuple)]
 
-def mosaic_tile_generator(img_in: Image.Image, img_ref: Image.Image, steps=100):
-    engine = PennywiseMosaicEngine(img_in, img_ref)
-    global ANIMATION_STEPS
-    ANIMATION_STEPS = steps
-    return engine.generate_frames()
+        if not boxes:
+            return canvas
+
+        min_x = min(box[0] for box in boxes)
+        max_x = max(box[2] for box in boxes)
+        min_y = min(box[1] for box in boxes)
+        max_y = max(box[3] for box in boxes)
+
+        shimmer_region = canvas.crop((min_x, min_y, max_x, max_y))
+        bright_region = ImageEnhance.Brightness(shimmer_region).enhance(1.4)
+        shimmer_frame = canvas.copy()
+        shimmer_frame.paste(bright_region, (min_x, min_y))
+        return shimmer_frame
 
 
-def convert_to_jpeg(input_path: str, output_name: str = "transformation_process.gif"):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    ref_path = os.path.join(base_dir, 'it.jpeg')
+def mosaic_tile_engine(
+    img_in: Image.Image,
+    img_ref: Image.Image,
+    steps: int = DEFAULT_ANIMATION_STEPS,
+    block_size: int = DEFAULT_BLOCK_SIZE,
+    blend_strength: float = FINAL_BLEND_STRENGTH,
+) -> PennywiseMosaicEngine:
+    return PennywiseMosaicEngine(
+        img_in,
+        img_ref,
+        animation_steps=steps,
+        block_size=block_size,
+        blend_strength=blend_strength,
+    )
 
-    if not os.path.exists(ref_path):
-        print(f"Error: Reference image 'it.jpeg' not found in {base_dir}")
-        return
 
-    print("Initializing Engine (Analyzing Pixels)...")
-    engine = PennywiseMosaicEngine(input_path, ref_path)
+def convert_to_jpeg(
+    input_path: str,
+    output_name: str = "transformation_process.gif",
+    ref_path: Optional[str] = None,
+    block_size: int = DEFAULT_BLOCK_SIZE,
+    steps: int = DEFAULT_ANIMATION_STEPS,
+    blend_strength: float = FINAL_BLEND_STRENGTH,
+    fps: int = DEFAULT_GIF_FPS,
+    frame_sample: int = DEFAULT_FRAME_SAMPLE,
+) -> Optional[Dict[str, str]]:
+    reference_path = ref_path or DEFAULT_REFERENCE_IMAGE
 
-    print("Generating Animation Frames...")
-    gen = engine.generate_frames()
-    
+    if not os.path.exists(reference_path):
+        print(f"Error: Reference image not found: {reference_path}")
+        return None
+
+    print("Initializing engine...")
+    engine = PennywiseMosaicEngine(
+        input_path,
+        reference_path,
+        animation_steps=steps,
+        block_size=block_size,
+        blend_strength=blend_strength,
+    )
+
+    print("Generating animation frames...")
     frames = []
-    for frame in gen:
+    image_frame_index = 0
+
+    for frame in engine.generate_frames():
+        if isinstance(frame, str):
+            print(f"\n{frame}")
+            continue
+
+        if frame_sample > 1 and image_frame_index % frame_sample != 0:
+            image_frame_index += 1
+            continue
+
         frames.append(frame.copy())
+        image_frame_index += 1
         print(".", end="", flush=True)
 
-    print(f"\nCollected {len(frames)} frames. Saving Animation...")
-    
-    output_path = os.path.join(os.path.dirname(input_path) or '.', output_name)
-    
-    if frames:
-        frames[0].save(
-            output_path,
-            save_all=True,
-            append_images=frames[1:],
-            optimize=False,
-            duration=40,
-            loop=0
-        )
-        return {'output_path': output_path}
-    return None
+    print(f"\nCollected {len(frames)} frames. Saving animation...")
+    output_path = os.path.join(os.path.dirname(input_path) or ".", output_name)
+
+    if not frames:
+        return None
+
+    duration_ms = max(1, int(1000 / max(1, fps)))
+    frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=frames[1:],
+        optimize=False,
+        duration=duration_ms,
+        loop=0,
+    )
+    return {"output_path": output_path}
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python image_converter.py <path_to_image>")
-        sys.exit(1)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate an IT PiXELS mosaic animation GIF.")
+    parser.add_argument("input", help="Path to the input image.")
+    parser.add_argument("-o", "--output", default="it_pixels_transform.gif", help="Output GIF filename.")
+    parser.add_argument(
+        "-r",
+        "--reference",
+        default=None,
+        help="Reference image path. Defaults to it.jpeg in the project root.",
+    )
+    parser.add_argument("-b", "--block-size", type=int, default=DEFAULT_BLOCK_SIZE)
+    parser.add_argument("-s", "--steps", type=int, default=DEFAULT_ANIMATION_STEPS)
+    parser.add_argument("--blend", type=float, default=FINAL_BLEND_STRENGTH)
+    parser.add_argument("--fps", type=int, default=DEFAULT_GIF_FPS)
+    parser.add_argument(
+        "--frame-sample",
+        type=int,
+        default=DEFAULT_FRAME_SAMPLE,
+        help="Keep every Nth image frame to reduce memory usage.",
+    )
+    args = parser.parse_args()
 
-    input_file = sys.argv[1]
-    if not os.path.exists(input_file):
-        print(f"Error: File {input_file} not found.")
+    if not os.path.exists(args.input):
+        print(f"Error: File not found: {args.input}")
         sys.exit(1)
 
     try:
-        result = convert_to_jpeg(input_file, output_name="pennywise_transform.gif")
-        if result:
-            print(f"Done! Full process saved to: {result['output_path']}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+        result = convert_to_jpeg(
+            args.input,
+            output_name=args.output,
+            ref_path=args.reference,
+            block_size=args.block_size,
+            steps=args.steps,
+            blend_strength=args.blend,
+            fps=args.fps,
+            frame_sample=max(1, args.frame_sample),
+        )
+    except OSError as exc:
+        print(f"Image processing failed: {exc}")
+        sys.exit(1)
+
+    if result:
+        print(f"Done. Full process saved to: {result['output_path']}")
+    else:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
