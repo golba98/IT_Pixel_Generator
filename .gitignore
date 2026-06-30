@@ -1,25 +1,42 @@
-# Python
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
 .venv/
-env/
 venv/
+env/
 ENV/
 
-# IDEs
-.vscode/
-.idea/
-.claude/
-
-# Sensitive data
+# Environment and secrets
 .env
+.env.*
+!.env.example
 *.pem
 *.key
 *.cert
 secret.json
 
-# Local artifacts
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# Logs and local runtime data
 *.log
 *.tmp
-it.jpeg
+*.sqlite
+*.sqlite3
+*.db
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+.codex/

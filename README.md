@@ -1,102 +1,111 @@
-# Image → Pennywise Mosaic (GUI + CLI)
+# 11-IT PiXELS
 
-This project visually transforms an input image by replacing regions with tiles sampled from a reference image (default: it.jpeg). The process is shown live in a GUI with progress and an ETA; a CLI helper can generate an animated GIF of the full transformation.
+11-IT PiXELS is a small Python image-mosaic tool. It transforms an input image by rebuilding it from tiles sampled from a reference image, with a Tkinter GUI for live preview and a CLI helper for generating an animated GIF.
 
-Features
-- Live GUI preview that shows the transformation frame-by-frame.
-- Progress bar and rolling-average ETA during the transformation.
-- Automatic block-size scaling to avoid memory issues on very large images.
-- CLI helper to produce an animated GIF of the full process.
+## Features
 
-Requirements
+- Live GUI preview of the mosaic transformation.
+- Configurable block size, animation speed, and color blend strength.
+- Save the final GUI result as JPEG or PNG.
+- CLI GIF export for the full transformation process.
+- Automatic block-size scaling for very large images.
+- Default reference image support through the tracked `it.jpeg` asset.
+
+## Tech Stack
+
 - Python 3.8+
-- See `requirements.txt` for exact pins (Pillow is required)
-- `tkinter` (usually bundled with Python; install via your OS package manager if missing)
+- Tkinter for the desktop GUI
+- Pillow for image loading, processing, and export
 
-Quick install
+## Setup
+
+Create and activate a virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+On Windows PowerShell:
+
 ```powershell
-# from the project folder (activate your venv first if used)
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```bash
 python -m pip install -r requirements.txt
 ```
 
-Run the GUI
-```powershell
+Tkinter is usually bundled with Python. If it is missing on Linux, install your distribution's Tkinter package, such as `python3-tk` on Debian or Ubuntu.
+
+## Run The Project
+
+Start the GUI:
+
+```bash
 python gui_converter.py
 ```
 
-Run the CLI (generate animated GIF)
-```powershell
-python image_converter.py C:\path\to\your\image.png
+On Windows, you can also run:
+
+```bat
+run_gui.bat
 ```
 
-Usage notes
-- Place a reference image named `it.jpeg` in the project root to use the default tile source. The GUI allows selecting a different reference if needed.
-- The GUI does not save files by default; use the CLI helper `convert_to_jpeg` (called by `image_converter.py`) to produce an animated GIF of the entire transformation.
-- For very large input images, the engine increases the tile block size automatically to keep memory usage reasonable. This keeps the process stable but reduces per-pixel detail.
+Generate an animated GIF from the CLI:
 
-How the visual transform works (brief)
-- Phase 1: Fast scan of the input to sample tiles and build a palette.
-- Phase 2: Blueprinting of the target image (mapping target regions to colors/hues).
-- Phase 3: Sorted placement (by hue/spectral order) with optional shimmer for the active processing area.
-- The GUI shows intermediate frames from the engine; a rolling-average of recent frame timings is used to compute the ETA.
-
-Troubleshooting
-- If the program fails on very large images, ensure you are running inside a virtual environment and have enough system memory; the engine will try to scale block size but very-large images may still be slow.
-- If `tkinter` is not found, install it for your OS (e.g., `sudo apt install python3-tk` on Debian/Ubuntu).
-
-Contributing
-- Feel free to open issues or PRs to add features such as an explicit save button in the GUI or different sorting/visualization modes.
-
-License
-- MIT (adjust as needed)
-
-Files of interest
-- `image_converter.py` — core engine that yields frames and performs the transformation
-- `gui_converter.py` — Tkinter GUI that consumes the engine frames and displays progress/ETA
-# Image to JPEG Converter (with GUI)
-# Image → picture it.jpeg (GUI + visual mosaic)
-
-This small tool visually transforms any input image by replacing its pixels with tiles sampled from a reference `it.jpeg`. The transformation is shown live in a window — nothing is written to your disk by default.
-
-Features
-- Visual, step-by-step "redesign" animation that tiles the reference image's pixels across the input.
-- GUI-first: run the GUI and watch the transform on the canvas (no automatic file saving).
-- CLI will open the GUI (optionally pre-selecting an image path).
-
-Requirements
-- Python 3.8+
-- Pillow (PIL) — included in `requirements.txt`
-- `tkinter` (standard on most Python installs; if missing, install your platform's tkinter package)
-
-Quick install
-
-```powershell
-# from the project folder (activate your venv first if used)
-python -m pip install -r requirements.txt
+```bash
+python image_converter.py path/to/input-image.png
 ```
 
-Run the GUI
+Useful CLI options:
 
-```powershell
-# start the GUI (opens file picker)
-python gui_converter.py
+```bash
+python image_converter.py path/to/input-image.png --output output.gif --reference it.jpeg --steps 120 --block-size 1 --blend 0.85
 ```
 
-Open the GUI with a preselected image (optional)
+## Tests And Validation
 
-```powershell
-python image_converter.py C:\path\to\your\image.png
+There is no automated test suite yet. For a basic validation pass, run:
+
+```bash
+python -m compileall -q gui_converter.py image_converter.py
 ```
 
-How it works
-- Select an input image in the GUI and click **Transform**.
-- The app tiles pixels from the reference `it.jpeg` across your image using a randomized block animation so you can watch the image be "redesigned".
-- If `it.jpeg` is missing from the project folder, the GUI will let you choose a different reference image.
+If you install development tools, these checks are also recommended:
 
-Notes
-- No output file is created by the transformation in the GUI — it is purely visual. If you want to save the final result, you can export it manually from the code or add a save option.
-- The repository contains `it.jpeg` which is used as the default tile reference.
+```bash
+python -m ruff check .
+python -m black --check .
+python -m pytest
+```
 
-License
-- MIT (add or change as appropriate for your public repository)
+## Project Structure
 
+```text
+.
+├── gui_converter.py      # Tkinter GUI
+├── image_converter.py    # Mosaic engine and CLI GIF export
+├── it.jpeg               # Default reference image
+├── requirements.txt      # Runtime Python dependencies
+├── run_gui.bat           # Windows launcher
+└── README.md
+```
+
+## Environment Variables
+
+No environment variables are required.
+
+## Notes And Limitations
+
+- Large images can be slow and memory-intensive, especially with a block size of `1`.
+- CLI GIF export stores frames in memory before saving, so use `--frame-sample` for very large outputs.
+- The default `it.jpeg` reference image is included in the repository. Confirm that you have the right to publish or redistribute it before making the repository public.
+- Generated images, local virtual environments, caches, logs, and local database files should stay uncommitted.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
